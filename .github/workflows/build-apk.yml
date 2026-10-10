@@ -16,12 +16,15 @@ jobs:
       - name: Descompactar o projeto
         run: |
           if [ -f source.zip ]; then
+            echo "Descompactando source.zip..."
             unzip -o source.zip
             if [ -d worldxadrez-app ]; then
               cp -r worldxadrez-app/* .
               rm -rf worldxadrez-app
             fi
           fi
+          echo "Arquivos na raiz:"
+          ls -la
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -32,7 +35,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: '17'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
