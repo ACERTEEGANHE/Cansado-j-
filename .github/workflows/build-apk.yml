@@ -1,0 +1,237 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worldxadrez-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build WorldXadrez APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verificar Node e npm
+        run: |
+          set -e
+          node --version
+          npm --version
+
+      - name: Configurar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Verificar Java
+        run: java -version
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Instalar componentes Android
+        run: |
+          set -e
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+          yes | sdkmanager --licenses || true
+
+      - name: Preparar arquivos do projeto
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP=""
+
+          if [ -f source.zip ]; then
+            ZIP="source.zip"
+          elif [ -f source-corrigido.zip ]; then
+            ZIP="source-corrigido.zip"
+          elif [ -f worldxadrez-estado-partida-corrigido.zip ]; then
+            ZIP="worldxadrez-estado-partida-corrigido.zip"
+          fi
+
+          if [ -n "$ZIP" ]; then
+            echo "Extraindo arquivo: $ZIP"
+            mkdir -p extracted
+            unzip -o "$ZIP" -d extracted
+
+            if [ -f extracted/package.json ]; then
+              PROJECT_DIR="extracted"
+            elif [ -f extracted/netcheck/package.json ]; then
+              PROJECT_DIR="extracted/netcheck"
+            elif [ -f extracted/worldxadrez-app/package.json ]; then
+              PROJECT_DIR="extracted/worldxadrez-app"
+            else
+              echo "ERRO: estrutura do ZIP não reconhecida."
+              find extracted -maxdepth 6 -name package.json -print
+              exit 1
+            fi
+
+            echo "Copiando projeto de: $PROJECT_DIR"
+            cp -a "$PROJECT_DIR"/. .
+          else
+            echo "Nenhum ZIP de fonte encontrado."
+            echo "Tentando usar os arquivos da raiz."
+          fi
+
+          if [ ! -f package.json ]; then
+            echo "ERRO: package.json não encontrado."
+            ls -la
+            exit 1
+          fi
+
+          if [ ! -f client/package.json ]; then
+            echo "ERRO: client/package.json não encontrado."
+            find . -maxdepth 5 -name package.json -print
+            exit 1
+          fi
+
+          if [ ! -f capacitor.config.json ] && \
+             [ ! -f capacitor.config.ts ] && \
+             [ ! -f capacitor.config.js ]; then
+            echo "ERRO: configuração do Capacitor não encontrada na raiz."
+            exit 1
+          fi
+
+          echo "Estrutura do projeto validada."
+
+      - name: Instalar dependências da raiz
+        run: npm install --no-audit --no-fund
+
+      - name: Verificar dependências do Capacitor
+        run: |
+          set -e
+
+          node <<'NODE'
+          const fs = require('fs');
+          const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const deps = {
+            ...(p.dependencies || {}),
+            ...(p.devDependencies || {})
+          };
+
+          for (const name of [
+            '@capacitor/core',
+            '@capacitor/cli',
+            '@capacitor/android'
+          ]) {
+            if (!deps[name]) {
+              console.error(`ERRO: dependência ausente: ${name}`);
+              process.exitCode = 1;
+            }
+          }
+          NODE
+
+          npx cap --version
+
+      - name: Instalar dependências do cliente
+        working-directory: client
+        run: npm install --no-audit --no-fund
+
+      - name: Compilar cliente
+        working-directory: client
+        env:
+          VITE_GAME_SERVER_URL: ${{ secrets.VITE_GAME_SERVER_URL || 'https://worldxadrez-server-hl21.onrender.com' }}
+        run: |
+          set -e
+          npm run build
+
+          if [ ! -f dist/index.html ]; then
+            echo "ERRO: client/dist/index.html não foi gerado."
+            exit 1
+          fi
+
+          echo "Cliente compilado com sucesso."
+
+      - name: Verificar configuração do Capacitor
+        run: |
+          set -e
+          npx cap doctor
+
+      - name: Preparar Android
+        run: |
+          set -e
+
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
+
+          if [ ! -f android/gradlew ]; then
+            echo "ERRO: android/gradlew não encontrado."
+            exit 1
+          fi
+
+      - name: Sincronizar Capacitor
+        run: |
+          set -e
+          npx cap sync android
+
+      - name: Verificar Gradle
+        working-directory: android
+        run: |
+          set -e
+          chmod +x gradlew
+          ./gradlew --version
+
+      - name: Gerar APK Debug
+        working-directory: android
+        run: |
+          set -e
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Conferir APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -s "$APK" ]; then
+            echo "ERRO: APK não encontrado ou vazio."
+            find android -type f -name "*.apk" -print
+            exit 1
+          fi
+
+          ls -lh "$APK"
+          sha256sum "$APK"
+
+      - name: Publicar APK para download
+        uses: actions/upload-artifact@v4
+        with:
+          name: worldxadrez-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Salvar diagnóstico se falhar
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worldxadrez-diagnostico
+          path: |
+            android/**/*.log
+            android/**/build/reports/**
+            client/npm-debug.log
+            npm-debug.log
+          if-no-files-found: ignore
+          retention-days: 7
