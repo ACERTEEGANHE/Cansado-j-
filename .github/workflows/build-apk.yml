@@ -2,7 +2,8 @@ name: Build APK
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -10,91 +11,119 @@ permissions:
 
 jobs:
   build:
+    name: Build WorldXadrez APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout
+      - name: Baixar código
         uses: actions/checkout@v4
 
-      - name: Descompactar o projeto
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -f source.zip ]; then
-            echo "Descompactando source.zip..."
-            unzip -o source.zip
-
-            if [ -d worldxadrez-app ]; then
-              cp -a worldxadrez-app/. .
-              rm -rf worldxadrez-app
-            fi
-          fi
-
-          test -f package.json || {
-            echo "ERRO: package.json não encontrado na raiz."
-            exit 1
-          }
-
-          test -f client/package.json || {
-            echo "ERRO: client/package.json não encontrado."
-            exit 1
-          }
-
-          ls -la
-
-      - name: Setup Node.js
+      - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            client/package-lock.json
+          # Cache desativado para evitar o erro de caminhos.
 
-      - name: Setup Java
+      - name: Configurar Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
-      - name: Setup Android SDK
+      - name: Configurar Android SDK
         uses: android-actions/setup-android@v4
-        with:
-          packages: |
-            platform-tools
-            platforms;android-34
-            build-tools;34.0.0
 
-      - name: Install root dependencies
-        run: npm install
+      - name: Instalar componentes Android
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
 
-      - name: Install client dependencies
+      - name: Preparar arquivos do projeto
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f source.zip ]; then
+            echo "Descompactando source.zip..."
+            mkdir -p extracted
+            unzip -o source.zip -d extracted
+
+            if [ -f extracted/worldxadrez-app/package.json ]; then
+              cp -a extracted/worldxadrez-app/. .
+            elif [ -f extracted/package.json ]; then
+              cp -a extracted/. .
+            else
+              echo "ERRO: não encontrei package.json dentro de source.zip."
+              find extracted -maxdepth 3 -type f | head -100
+              exit 1
+            fi
+          fi
+
+          if [ ! -f package.json ]; then
+            echo "ERRO: package.json não encontrado na raiz."
+            ls -la
+            exit 1
+          fi
+
+          if [ ! -f client/package.json ]; then
+            echo "ERRO: client/package.json não encontrado."
+            ls -la
+            exit 1
+          fi
+
+      - name: Instalar dependências da raiz
+        run: npm install --no-audit --no-fund
+
+      - name: Instalar dependências do cliente
         working-directory: client
-        run: npm install
+        run: npm install --no-audit --no-fund
 
-      - name: Build client
+      - name: Compilar cliente
         working-directory: client
         env:
           VITE_GAME_SERVER_URL: ${{ secrets.VITE_GAME_SERVER_URL || 'https://worldxadrez-server-hl21.onrender.com' }}
         run: npm run build
 
-      - name: Add Android platform if needed
+      - name: Verificar Capacitor
+        run: |
+          if [ ! -f capacitor.config.ts ] && \
+             [ ! -f capacitor.config.js ] && \
+             [ ! -f capacitor.config.json ]; then
+            echo "ERRO: configuração do Capacitor não encontrada na raiz."
+            exit 1
+          fi
+
+      - name: Preparar Android
         run: |
           if [ ! -d android ]; then
             npx cap add android
           fi
 
-      - name: Sync Capacitor
+      - name: Sincronizar Capacitor
         run: npx cap sync android
 
-      - name: Build Debug APK
+      - name: Gerar APK Debug
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleDebug --no-daemon
 
-      - name: Upload APK
+      - name: Conferir APK
+        shell: bash
+        run: |
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERRO: APK não encontrado."
+            exit 1
+          fi
+
+          ls -lh "$APK"
+
+      - name: Publicar APK para download
         uses: actions/upload-artifact@v4
         with:
           name: worldxadrez-apk
