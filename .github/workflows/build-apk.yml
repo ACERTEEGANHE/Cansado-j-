@@ -23,7 +23,6 @@ jobs:
               rm -rf worldxadrez-app
             fi
           fi
-          echo "Arquivos na raiz:"
           ls -la
 
       - name: Setup Node.js
@@ -39,6 +38,9 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: tools platform-tools platforms;android-34 build-tools;34.0.0
+          accept-android-sdk-licenses: true
 
       - name: Install root dependencies
         run: npm install
